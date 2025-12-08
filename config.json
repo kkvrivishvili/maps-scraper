@@ -1,0 +1,61 @@
+{
+  "scraper_config": {
+    "delays": {
+      "min_delay": 1.0,
+      "max_delay": 3.0,
+      "page_load_delay": 3.0,
+      "between_clicks_min": 0.5,
+      "between_clicks_max": 1.5
+    },
+    "browser": {
+      "headless": false,
+      "window_size": "1920,1080",
+      "language": "es-ES",
+      "disable_images": false
+    },
+    "extraction": {
+      "max_scroll_attempts": 15,
+      "timeout_seconds": 15,
+      "retry_attempts": 3
+    },
+    "export": {
+      "csv_enabled": true,
+      "json_enabled": true,
+      "excel_enabled": true,
+      "output_directory": "./resultados"
+    },
+    "proxy": {
+      "enabled": false,
+      "host": "",
+      "port": "",
+      "username": "",
+      "password": ""
+    },
+    "anti_detection": {
+      "rotate_user_agents": true,
+      "random_delays": true,
+      "human_like_scrolling": true,
+      "disable_webdriver_flag": true
+    }
+  },
+  "search_presets": [
+    {
+      "name": "Restaurantes Madrid",
+      "categoria": "restaurantes",
+      "ubicacion": "Madrid, España",
+      "max_results": 50
+    },
+    {
+      "name": "Hoteles Barcelona",
+      "categoria": "hoteles",
+      "ubicacion": "Barcelona, España",
+      "max_results": 30
+    },
+    {
+      "name": "Cafeterías Ciudad de México",
+      "categoria": "cafeterías",
+      "ubicacion": "Ciudad de México, México",
+      "max_results": 40
+    }
+  ]
+}
