@@ -22,6 +22,11 @@
       "csv_enabled": true,
       "json_enabled": true,
       "excel_enabled": true,
+      "google_sheets": {
+        "enabled": true,
+        "credentials_path": "gen-lang-client-0571756605-0e567500e274.json",
+        "sheet_name": "Scraper Results"
+      },
       "output_directory": "./resultados"
     },
     "proxy": {

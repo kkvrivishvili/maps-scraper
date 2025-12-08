@@ -24,6 +24,14 @@ from google_maps_scraper import (
     logger
 )
 
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    GSPREAD_AVAILABLE = True
+except ImportError:
+    logger.warning("gspread o google-auth no instalados. La exportación a Google Sheets estará deshabilitada.")
+    GSPREAD_AVAILABLE = False
+
 
 class ConfigManager:
     """Gestor de configuración desde archivo JSON"""
@@ -67,6 +75,11 @@ class ConfigManager:
                     "csv_enabled": True,
                     "json_enabled": True,
                     "excel_enabled": True,
+                    "google_sheets": {
+                        "enabled": False,
+                        "credentials_path": "gen-lang-client-0571756605-0e567500e274.json",
+                        "sheet_name": "Scraper Results"
+                    },
                     "output_directory": "./resultados"
                 }
             }
@@ -318,6 +331,9 @@ class BatchScraperManager:
         except ImportError:
             logger.warning("pandas/openpyxl no disponible, saltando exportación a Excel")
         
+        # Exportar a Google Sheets
+        self._export_google_sheets()
+        
         print(f"\n✅ Archivos exportados a: {output_dir}")
     
     def _export_csv(self, filename: Path):
@@ -358,6 +374,92 @@ class BatchScraperManager:
         df.to_excel(filename, index=False, engine='openpyxl')
         
         logger.info(f"Excel exportado: {filename}")
+
+    def _export_google_sheets(self):
+        """Exporta a Google Sheets"""
+        if not GSPREAD_AVAILABLE:
+            logger.warning("Saltando exportación a Google Sheets: librerías no instaladas")
+            return
+
+        gs_config = self.config_manager.get('scraper_config', 'export', 'google_sheets', default={})
+        if not gs_config.get('enabled', False):
+            return
+
+        creds_path = gs_config.get('credentials_path')
+        sheet_name = gs_config.get('sheet_name')
+
+        if not creds_path or not os.path.exists(creds_path):
+            logger.error(f"Archivo de credenciales no encontrado: {creds_path}")
+            print(f"❌ Error: Archivo de credenciales no encontrado: {creds_path}")
+            return
+
+        print(f"\n📤 Exportando a Google Sheets: {sheet_name}...")
+        
+        try:
+            scopes = [
+                'https://www.googleapis.com/auth/spreadsheets',
+                'https://www.googleapis.com/auth/drive'
+            ]
+            
+            credentials = Credentials.from_service_account_file(
+                creds_path,
+                scopes=scopes
+            )
+            
+            gc = gspread.authorize(credentials)
+            
+            try:
+                sh = gc.open(sheet_name)
+            except gspread.exceptions.SpreadsheetNotFound:
+                print(f"⚠️  Hoja '{sheet_name}' no encontrada. Intentando crearla...")
+                try:
+                    sh = gc.create(sheet_name)
+                    # Compartir con el usuario si es posible (impreso en logs)
+                    print(f"✅ Hoja creada. NOTA: Debes compartirla manualmente o usar la URL.")
+                    print(f"   URL: {sh.url}")
+                except Exception as e:
+                    logger.error(f"No se pudo crear la hoja: {e}")
+                    print(f"❌ Error creando hoja: {e}")
+                    return
+
+            worksheet = sh.sheet1
+            
+            # Preparar datos
+            from dataclasses import asdict
+            if not self.all_results:
+                return
+
+            # Obtener encabezados
+            headers = list(asdict(self.all_results[0]).keys())
+            
+            # Leer datos existentes para no duplicar encabezados si la hoja está vacía
+            existing_data = worksheet.get_all_values()
+            
+            data_to_write = []
+            if not existing_data:
+                data_to_write.append(headers)
+            elif existing_data[0] != headers:
+                # Si los encabezados son diferentes, advertir pero añadir igual
+                logger.warning("Los encabezados de la hoja no coinciden con los datos actuales")
+            
+            for business in self.all_results:
+                row = list(asdict(business).values())
+                # Convertir valores a string para asegurar compatibilidad
+                row = [str(x) if x is not None else "" for x in row]
+                data_to_write.append(row)
+            
+            # Escribir datos
+            if data_to_write:
+                worksheet.append_rows(data_to_write)
+                print(f"✅ Se añadieron {len(data_to_write) - (1 if not existing_data else 0)} filas a Google Sheets")
+            else:
+                print("ℹ️  No hay datos nuevos para añadir")
+
+        except Exception as e:
+            logger.error(f"Error exportando a Google Sheets: {e}")
+            print(f"❌ Error exportando a Google Sheets: {e}") 
+
+
 
 
 def main_batch_mode():
