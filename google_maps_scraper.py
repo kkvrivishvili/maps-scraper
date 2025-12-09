@@ -113,6 +113,7 @@ class GoogleMapsScraperAdvanced:
         self.proxy = proxy
         self.config = config or {}
         self.results: List[BusinessData] = []
+        self.current_search_group: Optional[str] = None
         
         # Inicializar extractor de emails
         self.extract_web_emails = False
@@ -264,6 +265,8 @@ class GoogleMapsScraperAdvanced:
         logger.info(f"Buscando: {query}")
         logger.info(f"URL: {url}")
         
+        self.current_search_group = query
+        
         try:
             self.driver.get(url)
             self._random_delay(3, 5)
@@ -299,6 +302,17 @@ class GoogleMapsScraperAdvanced:
                 )
                 current_count = len(business_elements)
                 logger.info(f"Elementos encontrados: {current_count} (Meta: {max_results})")
+                
+                # Check explícito de fin de lista
+                try:
+                    end_text_elements = self.driver.find_elements(By.CSS_SELECTOR, "span.HlvSq")
+                    for el in end_text_elements:
+                        if "final" in el.text.lower() or "end" in el.text.lower():
+                            logger.info("Detectado mensaje de fin de lista")
+                            current_count = max_results + 1 # Force break
+                            break
+                except:
+                    pass
                 
                 if current_count >= max_results:
                     logger.info("Meta de resultados alcanzada en vista")
@@ -348,29 +362,56 @@ class GoogleMapsScraperAdvanced:
                         logger.debug(f"No se pudieron extraer coordenadas del href: {e}")
 
                     # Click en el elemento para abrir detalles
-                    self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
+                    # Click en el elemento para abrir detalles
+                    # Scroll center para evitar quedar debajo del buscador
+                    self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'auto', block: 'center', inline: 'center'});", element)
                     self._random_delay(1.0, 2.0)
                     
                     # Intentar click hasta 3 veces si no cambia el panel
                     click_success = False
                     expected_name_lower = ""
+                    # === VALIDACIÓN PREVIA AL CLICK ===
+                    # Ignorar elementos que parecen ser anuncios explícitos
                     try:
-                        # Intentar obtener el texto de la cabecera del elemento de lista
                         raw_text = element.text
+                        if "Patrocinado" in raw_text or "Sponsored" in raw_text or "Anuncio" in raw_text:
+                            logger.info(f"Saltando elemento patrocinado/anuncio: {idx}")
+                            continue
+                            
+                        # Extraer nombre esperado (primera línea válida)
+                        expected_name_lower = ""
+                        blacklist_lines = ["patrocinado", "sponsored", "anuncio", "ad", "resultados", "results", "google maps", ""]
+                        
                         if raw_text:
-                             lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
-                             if lines:
-                                 expected_name_lower = lines[0].lower()
+                            lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
+                            for line in lines:
+                                if line.lower() not in blacklist_lines:
+                                    expected_name_lower = line.lower()
+                                    break
+                                    
+                        if not expected_name_lower:
+                             # Si no encontramos un nombre válido, saltamos
+                             continue
+                             
                     except:
                         pass
 
                     for attempt in range(3):
                         try:
                             # Click normal o JS
-                            if attempt == 0:
-                                element.click()
-                            else:
+                            # Click normal o JS (Mejorado)
+                            # Intentamos evitar "Click Intercepted" buscando un elemento clickeable interno o usando JS directo
+                            try:
+                                # Intento 1: Click JS directo al elemento contenedor (más seguro contra overlays)
                                 self.driver.execute_script("arguments[0].click();", element)
+                            except:
+                                # Intento 2: Buscar el enlace interno 'a' y clickearlo
+                                try:
+                                    link_el = element.find_element(By.TAG_NAME, "a")
+                                    self.driver.execute_script("arguments[0].click();", link_el)
+                                except:
+                                    # Fallback: Click nativo
+                                    element.click()
                             
                             self._random_delay(2, 3)
                             
@@ -511,8 +552,7 @@ class GoogleMapsScraperAdvanced:
             except:
                 pass
 
-            except:
-                pass
+
             
             # Clasificar Sitio Web vs Redes Sociales
             instagram_url = None

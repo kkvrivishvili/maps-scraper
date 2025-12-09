@@ -7,7 +7,7 @@
       "between_clicks_min": 0.5,
       "between_clicks_max": 1.5
     },
-    "concurrent_searches": 2,
+    "concurrent_searches": 4,
     "browser": {
       "headless": false,
       "window_size": "1920,1080",
@@ -56,7 +56,31 @@
       "name": "Showroom ropa, Ropa",
       "categoria": "showroom de ropa",
       "ubicacion": "Mendoza, Argentina",
-      "max_results": 50
+      "max_results": 200
+    },
+    {
+      "name": "clothes, Clothes",
+      "categoria": "ropa",
+      "ubicacion": "Mendoza, Argentina",
+      "max_results": 200
+    },
+    {
+      "name": "Niños",
+      "categoria": "ropa showroom niños",
+      "ubicacion": "Godoy Cruz, Mendoza",
+      "max_results": 200
+    },
+    {
+      "name": "ropa hombre",
+      "categoria": "ropa showroom hombre",
+      "ubicacion": "Godoy Cruz, Mendoza",
+      "max_results": 200
+    },
+    {
+      "name": "ropa mujer",
+      "categoria": "ropa showroom mujer",
+      "ubicacion": "Godoy Cruz, Mendoza",
+      "max_results": 200
     }
   ]
 }
