@@ -146,7 +146,7 @@ class WebsiteEmailExtractor:
         # 1. Enlaces 'mailto' (ya cubierto por _find_emails_in_soup)
         
         # 2. Bloques de contacto visual
-        contact_blocks = soup.select('.contact-info, .footer-contact, #contact-page')
+        contact_blocks = soup.select('.contact-info, .footer-contact, #contact-page, .contact-item, .subutility-list-item, .contact-link')
         for block in contact_blocks:
             found = self.email_pattern.findall(block.get_text())
             for email in found:

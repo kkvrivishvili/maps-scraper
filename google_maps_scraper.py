@@ -39,8 +39,6 @@ from selenium.common.exceptions import (
 )
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 
 
 # Configuración de logging
@@ -152,9 +150,7 @@ class GoogleMapsScraperAdvanced:
             chrome_options.add_argument(f'--proxy-server={self.proxy}')
         
         try:
-            # Usar WebDriver Manager para instalación automática robusta del driver
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
+            self.driver = webdriver.Chrome(options=chrome_options)
             
             # Script para ocultar webdriver
             self.driver.execute_cdp_cmd('Network.setUserAgentOverride', {
