@@ -54,13 +54,32 @@ class WebsiteEmailExtractor:
             if emails:
                  return self._select_best_email(emails)
             
-            # 2. Buscar página de contacto
-            contact_link = self._find_contact_link(soup, current_url)
-            if contact_link:
-                logger.info(f"Visitando página de contacto: {contact_link}")
-                contact_soup, _ = self._get_soup(contact_link)
-                if contact_soup:
-                    self._find_emails_in_soup(contact_soup, emails)
+            # Estrategias específicas por plataforma
+            domain = urlparse(current_url).netloc
+            if 'tiendanube' in domain:
+                logger.debug("Detectada Tienda Nube. Aplicando estrategia específica.")
+                self._extract_tienda_nube(soup, emails)
+            elif 'facebook.com' in domain:
+                 logger.debug("Detectado Facebook. Intentando extracción de meta-data.")
+                 self._extract_facebook(soup, emails)
+            elif 'instagram.com' in domain:
+                 logger.debug("Detectado Instagram. Intentando extracción de meta-data.")
+                 self._extract_instagram(soup, emails)
+
+            if emails:
+                 return self._select_best_email(emails)
+            
+            # 2. Buscar página de contacto (Si no es red social)
+            if 'facebook.com' not in domain and 'instagram.com' not in domain:
+                contact_link = self._find_contact_link(soup, current_url)
+                if contact_link:
+                    logger.info(f"Visitando página de contacto: {contact_link}")
+                    contact_soup, link_url = self._get_soup(contact_link)
+                    if contact_soup:
+                        self._find_emails_in_soup(contact_soup, emails)
+                        # También aplicar estrategia Tienda Nube si era tal
+                        if 'tiendanube' in urlparse(link_url).netloc:
+                             self._extract_tienda_nube(contact_soup, emails)
             
             return self._select_best_email(emails)
             
@@ -73,7 +92,14 @@ class WebsiteEmailExtractor:
             response = requests.get(url, headers=self.headers, timeout=self.timeout)
             response.raise_for_status()
             return BeautifulSoup(response.text, 'html.parser'), response.url
-        except Exception:
+        except requests.exceptions.HTTPError as e:
+            logger.warning(f"HTTP Error {e.response.status_code} visitando {url}")
+            return None, None
+        except requests.exceptions.Timeout:
+            logger.warning(f"Timeout visitando {url}")
+            return None, None
+        except Exception as e:
+            logger.warning(f"Error visitando {url}: {e}")
             return None, None
 
     def _find_emails_in_soup(self, soup: BeautifulSoup, emails: Set[str]):
@@ -83,11 +109,19 @@ class WebsiteEmailExtractor:
             if self._is_valid_email(email):
                 emails.add(email)
                 
-        # 2. Buscar texto visible (más lento, backup)
-        text = soup.get_text()
-        found = self.email_pattern.findall(text)
-        for email in found:
+        # 2. Buscar en todo el HTML crudo (Scripts, atributos, meta tags, etc.)
+        # Esto encuentra emails ocultos que get_text() ignora
+        raw_html = str(soup)
+        found_raw = self.email_pattern.findall(raw_html)
+        for email in found_raw:
             if self._is_valid_email(email):
+                emails.add(email)
+
+        # 3. Buscar texto visible (redundante pero maneja entidades HTML decodificadas)
+        text = soup.get_text()
+        found_text = self.email_pattern.findall(text)
+        for email in found_text:
+             if self._is_valid_email(email):
                 emails.add(email)
 
     def _find_contact_link(self, soup: BeautifulSoup, base_url: str) -> Optional[str]:
@@ -100,9 +134,53 @@ class WebsiteEmailExtractor:
             if any(keyword in href_lower or keyword in text for keyword in self.contact_keywords):
                 full_url = urljoin(base_url, href)
                 # Validar que sea del mismo dominio
-                if urlparse(base_url).netloc == urlparse(full_url).netloc:
+                if urlparse(base_url).netloc in urlparse(full_url).netloc:
                     return full_url
         return None
+
+    def _extract_tienda_nube(self, soup: BeautifulSoup, emails: Set[str]):
+        """Estrategia específica para Tienda Nube"""
+        # Muchas tiendas nube tienen el email en el footer o config
+        # Buscar en inputs ocultos o jsons de configuración es complejo con requests, 
+        # pero buscamos patrones comunes en el HTML renderizado.
+        # 1. Enlaces 'mailto' (ya cubierto por _find_emails_in_soup)
+        
+        # 2. Bloques de contacto visual
+        contact_blocks = soup.select('.contact-info, .footer-contact, #contact-page')
+        for block in contact_blocks:
+            found = self.email_pattern.findall(block.get_text())
+            for email in found:
+                if self._is_valid_email(email):
+                    emails.add(email)
+
+    def _extract_facebook(self, soup: BeautifulSoup, emails: Set[str]):
+        """Estrategia para Facebook (Limitada por login)"""
+        # Intentar sacar del meta description
+        meta_desc = soup.find('meta', attrs={'name': 'description'})
+        if meta_desc:
+            content = meta_desc.get('content', '')
+            found = self.email_pattern.findall(content)
+            for email in found:
+                if self._is_valid_email(email):
+                    emails.add(email)
+
+    def _extract_instagram(self, soup: BeautifulSoup, emails: Set[str]):
+        """Estrategia para Instagram"""
+        # Intentar sacar del meta description o title
+        meta_desc = soup.find('meta', attrs={'name': 'description'})
+        if meta_desc:
+            content = meta_desc.get('content', '')
+            found = self.email_pattern.findall(content)
+            for email in found:
+                emails.add(email)
+        
+        # A veces está en el JSON script
+        # (Complejo de parsear robustamente sin json load total, pero regex simple puede servir)
+        scripts = soup.find_all('script', type='application/ld+json')
+        for script in scripts:
+            found = self.email_pattern.findall(script.string or "")
+            for email in found:
+                emails.add(email)
 
     def _is_valid_email(self, email: str) -> bool:
         # Filtros básicos de basura

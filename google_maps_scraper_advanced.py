@@ -257,8 +257,16 @@ class BatchScraperManager:
         """
         results_dict = {}
         
+        scraper_config = self.config_manager.config.get('scraper_config', {})
         headless = self.config_manager.get('scraper_config', 'browser', 'headless', default=False)
-        scraper = GoogleMapsScraperAdvanced(headless=headless)
+        proxy_data = scraper_config.get('proxy', {})
+        proxy = f"{proxy_data.get('host')}:{proxy_data.get('port')}" if proxy_data.get('enabled') and proxy_data.get('host') else None
+
+        scraper = GoogleMapsScraperAdvanced(
+            headless=headless,
+            proxy=proxy,
+            config=scraper_config
+        )
         
         try:
             for idx, search in enumerate(searches, 1):

@@ -24,6 +24,7 @@ from datetime import datetime
 from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict
 from urllib.parse import quote_plus
+from email_extractor import WebsiteEmailExtractor
 import re
 
 from selenium import webdriver
@@ -96,18 +97,33 @@ class GoogleMapsScraperAdvanced:
     Scraper avanzado para Google Maps con técnicas anti-detección
     """
     
-    def __init__(self, headless: bool = False, proxy: Optional[str] = None):
+    def __init__(self, headless: bool = False, proxy: Optional[str] = None, config: Optional[Dict] = None):
         """
         Inicializa el scraper
         
         Args:
             headless: Ejecutar en modo headless
             proxy: Proxy a utilizar (formato: host:port)
+            config: Configuración completa
         """
         self.driver = None
         self.headless = headless
         self.proxy = proxy
+        self.config = config or {}
         self.results: List[BusinessData] = []
+        
+        # Inicializar extractor de emails
+        self.extract_web_emails = False
+        self.website_extractor = None
+        
+        if self.config:
+            extraction_config = self.config.get('extraction', {})
+            self.extract_web_emails = extraction_config.get('extract_emails_from_websites', False)
+            if self.extract_web_emails:
+                timeout = extraction_config.get('website_scrape_timeout', 10)
+                self.website_extractor = WebsiteEmailExtractor(timeout=timeout)
+                logger.info(f"Extractor de emails web activado (Timeout: {timeout}s)")
+
         self._setup_driver()
         
     def _setup_driver(self):
@@ -249,11 +265,12 @@ class GoogleMapsScraperAdvanced:
             # Estrategia de scroll agresiva
             no_change_count = 0
             last_count = 0
+            current_count = 0
             
             # Intentar más veces si no hay cambios
             max_no_change = 5 
             
-            while len(self.results) < max_results: # Usar len(results) real o elementos encontrados
+            while True: 
                 self._human_like_scroll(results_panel)
                 
                 # Verificar cantidad de resultados cargados
@@ -294,11 +311,14 @@ class GoogleMapsScraperAdvanced:
                 "div[role='feed'] > div > div[jsaction]"
             )[:max_results]
             
+            current_search_results = []
+            
             for idx, element in enumerate(business_elements, 1):
                 try:
                     business_data = self._extract_business_details(element, idx)
                     if business_data:
                         self.results.append(business_data)
+                        current_search_results.append(business_data)
                         # Sanitize name for logging to avoid UnicodeEncodeError on Windows consoles
                         safe_name = business_data.nombre.encode('ascii', 'replace').decode('ascii')
                         logger.info(f"[{idx}/{len(business_elements)}] Extraído: {safe_name}")
@@ -310,8 +330,8 @@ class GoogleMapsScraperAdvanced:
                 if idx < len(business_elements):
                     self._random_delay(0.5, 1.5)
             
-            logger.info(f"Extracción completada. Total: {len(self.results)} negocios")
-            return self.results
+            logger.info(f"Extracción completada. Total nuevos: {len(current_search_results)} negocios")
+            return current_search_results
             
         except Exception as e:
             logger.error(f"Error durante la búsqueda: {e}")
