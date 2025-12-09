@@ -249,6 +249,16 @@ class BatchScraperManager:
         self.config_manager = config_manager
         self.cache_manager = CacheManager() if use_cache else None
         self.all_results: List[BusinessData] = []
+        
+    def _normalize_text(self, text: Optional[str]) -> str:
+        """Normaliza texto para comparación (elimina acentos, espacios extra, etc)"""
+        if not text:
+            return ""
+        import unicodedata
+        text = text.lower().strip()
+        text = unicodedata.normalize('NFKD', text).encode('ASCII', 'ignore').decode('utf-8')
+        text = re.sub(r'\s+', ' ', text)
+        return text
     
     def run_batch(self, searches: List[Dict]) -> Dict[str, List[BusinessData]]:
         """
@@ -289,7 +299,33 @@ class BatchScraperManager:
                     search_key, results = future.result()
                     if results:
                         results_dict[search_key] = results
-                        self.all_results.extend(results)
+                        
+                        # Deduplicación robusta al agregar
+                        for result in results:
+                            # Generar firma única
+                            sig_name = self._normalize_text(result.nombre)
+                            sig_addr = self._normalize_text(result.direccion)
+                            
+                            # Si falta nombre, usar coords
+                            if not sig_name and result.lat and result.lng:
+                                signature = f"gps|{result.lat}|{result.lng}"
+                            else:
+                                signature = f"{sig_name}|{sig_addr}"
+                            
+                            exists = False
+                            for existing in self.all_results:
+                                ex_name = self._normalize_text(existing.nombre)
+                                ex_addr = self._normalize_text(existing.direccion)
+                                ex_sig = f"{ex_name}|{ex_addr}"
+                                
+                                # Coincidencia si firma es igual
+                                if signature == ex_sig:
+                                    exists = True
+                                    break
+                                    
+                            if not exists:
+                                self.all_results.append(result)
+                                
                 except Exception as e:
                     logger.error(f"Error crítico en hilo de búsqueda: {e}")
                     
@@ -324,37 +360,29 @@ class BatchScraperManager:
         )
         
         try:
-                    sig_name = (result.nombre or "").lower().strip()
-                    sig_addr = (result.direccion or "").lower().strip()
-                    if not sig_name or sig_name == "n/a":
-                        # Si no tiene nombre, usar lat/lng si existe, sino saltar
-                        if result.lat and result.lng:
-                            signature = f"gps|{result.lat}|{result.lng}"
-                        else:
-                            continue
-                    else:
-                        signature = f"{sig_name}|{sig_addr}"
-                    
-                    # Verificar si ya existe
-                    exists = False
-                    for existing in self.all_results:
-                        ex_sig_name = (existing.nombre or "").lower().strip()
-                        ex_sig_addr = (existing.direccion or "").lower().strip()
-                        if ex_sig_name == sig_name and ex_sig_addr == sig_addr:
-                            exists = True
-                            # Opcional: Agregar este grupo de búsqueda al existente si quisiéramos lista
-                            # existing.search_group += f", {result.search_group}"
-                            break
-                    
-                    if not exists:
-                        self.all_results.append(result)
-                    else:
-                        logger.info(f"Duplicado detectado y omitido: {result.nombre}")
+            results = scraper.search_businesses(
+                categoria=categoria,
+                ubicacion=ubicacion,
+                max_results=max_results
+            )
+            
+            # Guardar en cache (Intento de escritura segura básica)
+            if self.cache_manager and results:
+                self.cache_manager.save(categoria, ubicacion, results)
                 
+            print(f"🏁 FINALIZADO {idx}/{total}: {categoria} - {len(results)} resultados")
+            return search_key, results
+            
+        except Exception as e:
+            logger.error(f"Error en búsqueda {categoria}/{ubicacion}: {e}")
+            return search_key, []
         finally:
-            scraper.close()
-        
-        return results_dict
+            # Asegurar cierre del driver
+            if hasattr(scraper, 'driver') and scraper.driver:
+                try:
+                    scraper.driver.quit()
+                except:
+                    pass
     
     def export_all(self, output_dir: str = "./resultados"):
         """Exporta todos los resultados acumulados"""

@@ -21,7 +21,7 @@ import json
 import csv
 import logging
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, asdict
 from urllib.parse import quote_plus
 from email_extractor import WebsiteEmailExtractor
@@ -147,7 +147,19 @@ class GoogleMapsScraperAdvanced:
         chrome_options.add_argument('--disable-notifications')
         chrome_options.add_argument('--lang=es-ES')
         
+        # Deshabilitar imágenes si se solicita
+        if self.config.get('browser', {}).get('disable_images', False):
+            prefs = {"profile.managed_default_content_settings.images": 2}
+            chrome_options.add_experimental_option("prefs", prefs)
+
         # Configuración de proxy si se proporciona
+        proxy_config = self.config.get('proxy', {})
+        if proxy_config.get('enabled'):
+            host = proxy_config.get('host')
+            port = proxy_config.get('port')
+            if host and port:
+                self.proxy = f"{host}:{port}"
+
         if self.proxy:
             chrome_options.add_argument(f'--proxy-server={self.proxy}')
         
@@ -167,8 +179,13 @@ class GoogleMapsScraperAdvanced:
             logger.error(f"Error al configurar WebDriver: {e}")
             raise
     
-    def _random_delay(self, min_seconds: float = 1.0, max_seconds: float = 3.0):
+    def _random_delay(self, min_seconds: float = None, max_seconds: float = None):
         """Añade un delay aleatorio para simular comportamiento humano"""
+        if min_seconds is None:
+            min_seconds = self.config.get('delays', {}).get('min_delay', 1.0)
+        if max_seconds is None:
+            max_seconds = self.config.get('delays', {}).get('max_delay', 3.0)
+            
         delay = random.uniform(min_seconds, max_seconds)
         time.sleep(delay)
     
@@ -317,7 +334,91 @@ class GoogleMapsScraperAdvanced:
             
             for idx, element in enumerate(business_elements, 1):
                 try:
-                    business_data = self._extract_business_details(element, idx)
+                    # Extraer coordenadas antes de hacer click (más preciso y evita duplicados del map center)
+                    pre_lat, pre_lng = None, None
+                    try:
+                        href = element.get_attribute('href')
+                        if href:
+                            # Buscar !3d y !4d
+                            pin_coords = re.search(r'!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)', href)
+                            if pin_coords:
+                                pre_lat = float(pin_coords.group(1))
+                                pre_lng = float(pin_coords.group(2))
+                    except Exception as e:
+                        logger.debug(f"No se pudieron extraer coordenadas del href: {e}")
+
+                    # Click en el elemento para abrir detalles
+                    self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
+                    self._random_delay(1.0, 2.0)
+                    
+                    # Intentar click hasta 3 veces si no cambia el panel
+                    click_success = False
+                    expected_name_lower = ""
+                    try:
+                        # Intentar obtener el texto de la cabecera del elemento de lista
+                        raw_text = element.text
+                        if raw_text:
+                             lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
+                             if lines:
+                                 expected_name_lower = lines[0].lower()
+                    except:
+                        pass
+
+                    for attempt in range(3):
+                        try:
+                            # Click normal o JS
+                            if attempt == 0:
+                                element.click()
+                            else:
+                                self.driver.execute_script("arguments[0].click();", element)
+                            
+                            self._random_delay(2, 3)
+                            
+                            # Verificar si el panel cambió (nombre coincide con esperado)
+                            extracted_name = "N/A"
+                            name_selectors = [
+                                (By.CSS_SELECTOR, "h1.DUwDvf"),
+                                (By.CSS_SELECTOR, "h1.fontHeadlineLarge"),
+                                (By.TAG_NAME, "h1"),
+                                (By.CSS_SELECTOR, "[role='main'] [aria-label]") 
+                            ]
+                            
+                            for selector in name_selectors:
+                                try:
+                                    nombre_elements = self.driver.find_elements(*selector)
+                                    for el in nombre_elements:
+                                         raw_text = el.text.strip()
+                                         text = raw_text.split('\n')[0].strip()
+                                         
+                                         blacklist = ["Resultados", "Results", "Google Maps", "Patrocinado", "Sponsored", "Anuncio", "Ad", ""]
+                                         
+                                         if text and text not in blacklist and "Patrocinado" not in text:
+                                             extracted_name = text
+                                             break
+                                    if extracted_name != "N/A":
+                                        break
+                                except:
+                                    continue
+                            
+                            if extracted_name != "N/A" and expected_name_lower:
+                                ex_lower = extracted_name.lower()
+                                if expected_name_lower in ex_lower or ex_lower in expected_name_lower:
+                                    click_success = True
+                                    break
+                                else:
+                                    logger.warning(f"Click intento {attempt+1}: Nombre panel '{extracted_name}' no coincide con lista '{expected_name_lower}'")
+                            elif extracted_name != "N/A":
+                                click_success = True
+                                break
+                                
+                        except Exception as e:
+                            logger.warning(f"Excepción en click intento {attempt+1}: {e}")
+                    
+                    if not click_success:
+                        logger.error(f"No se pudo abrir panel correcto para: {expected_name_lower}")
+                        continue
+
+                    business_data = self._extract_business_details(idx, (pre_lat, pre_lng))
                     if business_data:
                         self.results.append(business_data)
                         current_search_results.append(business_data)
@@ -340,113 +441,37 @@ class GoogleMapsScraperAdvanced:
             self.driver.save_screenshot("search_error.png")
             return []
     
-    def _extract_business_details(self, element, index: int) -> Optional[BusinessData]:
+    def _extract_business_details(self, index: int, pre_coords: Tuple[Optional[float], Optional[float]] = (None, None)) -> Optional[BusinessData]:
         """
-        Extrae detalles de un negocio desde su elemento en la lista
+        Extrae detalles de un negocio desde el panel de detalles ya abierto
         """
         try:
-            # Obtener nombre esperado del elemento de la lista para verificar click
-            expected_name_lower = ""
+            # Extraer nombre del panel abierto
+            nombre = "N/A"
             try:
-                # Intentar obtener el texto de la cabecera del elemento de lista
-                # Suele ser un div con clase fontHeadlineSmall o simplemente la primera línea de texto
-                raw_text = element.text
-                if raw_text:
-                     # Tomar primera línea no vacía
-                     lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
-                     if lines:
-                         expected_name_lower = lines[0].lower()
+                name_selectors = [
+                    (By.CSS_SELECTOR, "h1.DUwDvf"),
+                    (By.CSS_SELECTOR, "h1.fontHeadlineLarge"),
+                    (By.TAG_NAME, "h1")
+                ]
+                for selector in name_selectors:
+                    try:
+                        el = self.driver.find_element(*selector)
+                        if el.is_displayed():
+                            nombre = el.text
+                            break
+                    except:
+                        continue
             except:
                 pass
-
-            # Click en el elemento para abrir detalles
-            self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
-            self._random_delay(1.0, 2.0)
             
-            # Intentar click hasta 3 veces si no cambia el panel
-            click_success = False
-            extracted_name = ""
-            
-            for attempt in range(3):
-                try:
-                    # Click normal o JS
-                    if attempt == 0:
-                        element.click()
-                    else:
-                        self.driver.execute_script("arguments[0].click();", element)
-                    
-                    self._random_delay(2, 3)
-                    
-                    # Verificar si el panel cambió (nombre coincide con esperado)
-                    # Estrategia multi-selector para el Nombre
-                    extracted_name = "N/A"
-                    name_selectors = [
-                        (By.CSS_SELECTOR, "h1.DUwDvf"),
-                        (By.CSS_SELECTOR, "h1.fontHeadlineLarge"),
-                        (By.TAG_NAME, "h1"),
-                        (By.CSS_SELECTOR, "[role='main'] [aria-label]") 
-                    ]
-                    
-                    for selector in name_selectors:
-                        try:
-                            nombre_elements = self.driver.find_elements(*selector)
-                            for el in nombre_elements:
-                                 # Tomar solo la primera línea y eliminar espacios
-                                 raw_text = el.text.strip()
-                                 text = raw_text.split('\n')[0].strip()
-                                 
-                                 # Lista negra
-                                 blacklist = ["Resultados", "Results", "Google Maps", "Patrocinado", "Sponsored", "Anuncio", "Ad", ""]
-                                 
-                                 if text and text not in blacklist and "Patrocinado" not in text:
-                                     extracted_name = text
-                                     break
-                            if extracted_name != "N/A":
-                                break
-                        except:
-                            continue
-                    
-                    # Validación: Si el nombre extraído se parece al esperado
-                    if extracted_name != "N/A" and expected_name_lower:
-                        # Simple check: is expected name in extracted name or vice versa?
-                        # Ignorar caso y espacios
-                        ex_lower = extracted_name.lower()
-                        if expected_name_lower in ex_lower or ex_lower in expected_name_lower:
-                            click_success = True
-                            break
-                        else:
-                            logger.warning(f"Click intento {attempt+1}: Nombre panel '{extracted_name}' no coincide con lista '{expected_name_lower}'")
-                    elif extracted_name != "N/A":
-                        # Si no pudimos leer nombre esperado, pero tenemos un nombre válido, asumimos éxito
-                        click_success = True
-                        break
-                        
-                except Exception as e:
-                    logger.warning(f"Excepción en click intento {attempt+1}: {e}")
-            
-            if not click_success:
-                logger.error(f"No se pudo abrir panel correcto para: {expected_name_lower}")
-                return None
-            
-            nombre = extracted_name
-
             # Esperar brevemente a que la URL cambie para reflejar el negocio (!3d...)
-            # Esto mejora la extracción de coordenadas
             try:
                 WebDriverWait(self.driver, 2).until(
                    lambda d: "!3d" in d.current_url or "/place/" in d.current_url
                 )
             except:
-                pass # Si no cambia, seguimos igual
-
-            # Esperar brevemente a que la URL cambie para reflejar el negocio (!3d...)
-            # Esto mejora la extracción de coordenadas
-            try:
-                WebDriverWait(self.driver, 2).until(
-                   lambda d: "!3d" in d.current_url or "/place/" in d.current_url
-                )
-            except:
-                pass # Si no cambia, seguimos igual
+                pass
 
 
             
@@ -568,25 +593,27 @@ class GoogleMapsScraperAdvanced:
                 pass
             
             # Extraer coordenadas (Mejorado)
-            lat, lng = None, None
-            try:
-                current_url = self.driver.current_url
-                
-                # Intentar encontrar !3d y !4d que indican la ubicación del pin específico
-                # Formato: !3d-32.896!4d-68.851
-                pin_coords = re.search(r'!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)', current_url)
-                
-                if pin_coords:
-                    lat = float(pin_coords.group(1))
-                    lng = float(pin_coords.group(2))
-                else:
-                    # Fallback al centro del mapa (menos preciso)
-                    center_coords = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', current_url)
-                    if center_coords:
-                        lat = float(center_coords.group(1))
-                        lng = float(center_coords.group(2))
-            except:
-                pass
+            lat, lng = pre_coords
+            
+            # Si no obtuvimos coordenadas del href, intentamos de la URL actual
+            if not lat or not lng:
+                try:
+                    current_url = self.driver.current_url
+                    
+                    # Intentar encontrar !3d y !4d que indican la ubicación del pin específico
+                    pin_coords = re.search(r'!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)', current_url)
+                    
+                    if pin_coords:
+                        lat = float(pin_coords.group(1))
+                        lng = float(pin_coords.group(2))
+                    else:
+                        # Fallback al centro del mapa (menos preciso)
+                        center_coords = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', current_url)
+                        if center_coords:
+                            lat = float(center_coords.group(1))
+                            lng = float(center_coords.group(2))
+                except:
+                    pass
             
             # Validación de calidad
             if not nombre or len(nombre) < 2:
@@ -630,7 +657,8 @@ class GoogleMapsScraperAdvanced:
             with open(filename, 'w', newline='', encoding='utf-8-sig') as csvfile:
                 fieldnames = [
                     'nombre', 'direccion', 'telefono', 'email', 'sitio_web',
-                    'rating', 'reviews_count', 'categoria', 'lat', 'lng', 'scrape_timestamp'
+                    'instagram', 'facebook', 'rating', 'reviews_count', 'categoria', 
+                    'horarios', 'lat', 'lng', 'search_group', 'scrape_timestamp'
                 ]
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 

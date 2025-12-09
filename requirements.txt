@@ -1,4 +1,22 @@
+# Requirements.txt - Todas las dependencias necesarias
+
+# Core scraping
 selenium==4.16.0
+webdriver-manager==4.0.1
+
+# Data processing
 pandas==2.1.4
 openpyxl==3.1.2
-webdriver-manager==4.0.1
+
+# Email extraction (FALTABAN)
+requests==2.31.0
+beautifulsoup4==4.12.2
+
+# Google Sheets export (FALTABAN)
+gspread==5.12.0
+google-auth==2.23.4
+google-auth-oauthlib==1.1.0
+google-auth-httplib2==0.1.1
+
+# Optional pero recomendado
+lxml==4.9.3  # Parser más rápido para BeautifulSoup
