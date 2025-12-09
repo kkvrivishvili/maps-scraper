@@ -293,12 +293,43 @@ class BatchScraperManager:
                 if self.cache_manager and results:
                     self.cache_manager.set(categoria, ubicacion, results)
                 
-                results_dict[f"{categoria}_{ubicacion}"] = results
-                self.all_results.extend(results)
-                
                 # Generar reporte para esta búsqueda
                 summary = ReportGenerator.generate_summary(results)
                 ReportGenerator.print_summary(summary)
+
+                # Deduplicación y Agregación
+                for result in results:
+                    # Asignar grupo de búsqueda
+                    result.search_group = f"{categoria} en {ubicacion}"
+                    
+                    # Generar firma única (nombre + direccion)
+                    # Usar .lower() y eliminar espacios para robustez
+                    sig_name = (result.nombre or "").lower().strip()
+                    sig_addr = (result.direccion or "").lower().strip()
+                    if not sig_name or sig_name == "n/a":
+                        # Si no tiene nombre, usar lat/lng si existe, sino saltar
+                        if result.lat and result.lng:
+                            signature = f"gps|{result.lat}|{result.lng}"
+                        else:
+                            continue
+                    else:
+                        signature = f"{sig_name}|{sig_addr}"
+                    
+                    # Verificar si ya existe
+                    exists = False
+                    for existing in self.all_results:
+                        ex_sig_name = (existing.nombre or "").lower().strip()
+                        ex_sig_addr = (existing.direccion or "").lower().strip()
+                        if ex_sig_name == sig_name and ex_sig_addr == sig_addr:
+                            exists = True
+                            # Opcional: Agregar este grupo de búsqueda al existente si quisiéramos lista
+                            # existing.search_group += f", {result.search_group}"
+                            break
+                    
+                    if not exists:
+                        self.all_results.append(result)
+                    else:
+                        logger.info(f"Duplicado detectado y omitido: {result.nombre}")
                 
         finally:
             scraper.close()
@@ -417,6 +448,17 @@ class BatchScraperManager:
                     # Compartir con el usuario si es posible (impreso en logs)
                     print(f"✅ Hoja creada. NOTA: Debes compartirla manualmente o usar la URL.")
                     print(f"   URL: {sh.url}")
+                    
+                    # Intentar compartir si se configura email
+                    share_email = gs_config.get('share_email')
+                    if share_email:
+                        try:
+                            sh.share(share_email, perm_type='user', role='writer')
+                            print(f"✅ Hoja compartida con: {share_email}")
+                        except Exception as e:
+                            logger.error(f"No se pudo compartir la hoja: {e}")
+                            print(f"⚠️  No se pudo compartir automáticamente: {e}")
+
                 except Exception as e:
                     logger.error(f"No se pudo crear la hoja: {e}")
                     print(f"❌ Error creando hoja: {e}")
@@ -432,28 +474,54 @@ class BatchScraperManager:
             # Obtener encabezados
             headers = list(asdict(self.all_results[0]).keys())
             
-            # Leer datos existentes para no duplicar encabezados si la hoja está vacía
-            existing_data = worksheet.get_all_values()
+            # Leer datos existentes para deduplicar contra la hoja (básico)
+            existing_data_all = worksheet.get_all_values()
             
             data_to_write = []
-            if not existing_data:
-                data_to_write.append(headers)
-            elif existing_data[0] != headers:
-                # Si los encabezados son diferentes, advertir pero añadir igual
-                logger.warning("Los encabezados de la hoja no coinciden con los datos actuales")
             
+            # Si la hoja está vacía, escribir headers
+            if not existing_data_all:
+                data_to_write.append(headers)
+                existing_signatures = set()
+            else:
+                # Crear set de firmas existentes (nombre|direccion) para evitar duplicados en la hoja
+                # Asumiendo indices: nombre=0, direccion=1 (verificar orden en headers)
+                # Mejor usar dict reader logic si posible, pero aquí headers son dinámicos
+                header_row = existing_data_all[0]
+                try:
+                    idx_name = header_row.index('nombre')
+                    idx_addr = header_row.index('direccion')
+                    existing_signatures = {
+                        f"{row[idx_name].lower().strip()}|{row[idx_addr].lower().strip()}" 
+                        for row in existing_data_all[1:] 
+                        if len(row) > max(idx_name, idx_addr)
+                    }
+                except ValueError:
+                    existing_signatures = set()
+            
+            count_new = 0
             for business in self.all_results:
+                # Verificar duplicado contra hoja
+                sig_name = (business.nombre or "").lower().strip()
+                sig_addr = (business.direccion or "").lower().strip()
+                signature = f"{sig_name}|{sig_addr}"
+                
+                if signature in existing_signatures:
+                    continue
+                
                 row = list(asdict(business).values())
                 # Convertir valores a string para asegurar compatibilidad
                 row = [str(x) if x is not None else "" for x in row]
                 data_to_write.append(row)
+                existing_signatures.add(signature) # Evitar duplicados internos en lote si falló dedup previo
+                count_new += 1
             
             # Escribir datos
             if data_to_write:
                 worksheet.append_rows(data_to_write)
-                print(f"✅ Se añadieron {len(data_to_write) - (1 if not existing_data else 0)} filas a Google Sheets")
+                print(f"✅ Se añadieron {count_new} nuevas filas a Google Sheets (Duplicados omitidos)")
             else:
-                print("ℹ️  No hay datos nuevos para añadir")
+                print("ℹ️  No hay datos nuevos para añadir (todo duplicado)")
 
         except Exception as e:
             logger.error(f"Error exportando a Google Sheets: {e}")
@@ -485,7 +553,14 @@ def main_batch_mode():
         
         if response == 's':
             # Ejecutar batch
-            batch_manager = BatchScraperManager(config_manager, use_cache=True)
+            # Leer configuración de cache
+            cache_config = config_manager.get('scraper_config', 'cache', default={})
+            use_cache = cache_config.get('enabled', False) # Default a False si no existe o para forzar nueva búsqueda
+            
+            if not use_cache:
+                print("⚠️  Cache deshabilitado. Se realizará una nueva búsqueda.")
+            
+            batch_manager = BatchScraperManager(config_manager, use_cache=use_cache)
             results_dict = batch_manager.run_batch(presets)
             
             # Exportar todo

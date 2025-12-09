@@ -36,6 +36,8 @@ from selenium.common.exceptions import (
     NoSuchElementException,
     StaleElementReferenceException
 )
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.action_chains import ActionChains
 
 
 # Configuración de logging
@@ -65,6 +67,7 @@ class BusinessData:
     lat: Optional[float] = None
     lng: Optional[float] = None
     scrape_timestamp: str = None
+    search_group: Optional[str] = None
     
     def __post_init__(self):
         if self.scrape_timestamp is None:
@@ -152,28 +155,36 @@ class GoogleMapsScraperAdvanced:
         time.sleep(delay)
     
     def _human_like_scroll(self, scrollable_element):
-        """Simula scroll humano con pausas irregulares"""
-        scroll_pause_time = random.uniform(0.5, 1.5)
-        last_height = self.driver.execute_script(
-            "return arguments[0].scrollHeight", scrollable_element
-        )
-        
-        while True:
-            # Scroll con velocidad variable
-            scroll_amount = random.randint(300, 500)
+        """Simula scroll humano mejorado con Teclas"""
+        try:
+            # Click para dar foco
+            self.driver.execute_script("arguments[0].click();", scrollable_element)
+        except:
+            pass
+            
+        # Método 1: Teclas (Más natural para activar eventos de carga)
+        try:
+            actions = ActionChains(self.driver)
+            actions.move_to_element(scrollable_element)
+            actions.click()
+            # Enviar Page Down varias veces
+            for _ in range(random.randint(3, 6)):
+                actions.send_keys(Keys.PAGE_DOWN)
+                actions.pause(random.uniform(0.2, 0.5))
+            actions.perform()
+        except Exception as e:
+            logger.warning(f"Fallo scroll con teclas: {e}")
+            
+        # Método 2: JS Scroll (Backup)
+        try:
             self.driver.execute_script(
-                f"arguments[0].scrollBy(0, {scroll_amount});", scrollable_element
+                "arguments[0].scrollTop = arguments[0].scrollHeight", 
+                scrollable_element
             )
+        except:
+            pass
             
-            time.sleep(scroll_pause_time)
-            
-            new_height = self.driver.execute_script(
-                "return arguments[0].scrollHeight", scrollable_element
-            )
-            
-            if new_height == last_height:
-                break
-            last_height = new_height
+        time.sleep(random.uniform(1.5, 3.0))
     
     def _extract_email_from_text(self, text: str) -> Optional[str]:
         """Extrae email usando regex"""
@@ -234,24 +245,47 @@ class GoogleMapsScraperAdvanced:
             
             # Scroll para cargar más resultados
             logger.info("Realizando scroll para cargar más resultados...")
-            scroll_attempts = 0
-            max_scroll_attempts = max_results // 10 + 5
             
-            while scroll_attempts < max_scroll_attempts:
+            # Estrategia de scroll agresiva
+            no_change_count = 0
+            last_count = 0
+            
+            # Intentar más veces si no hay cambios
+            max_no_change = 5 
+            
+            while len(self.results) < max_results: # Usar len(results) real o elementos encontrados
                 self._human_like_scroll(results_panel)
-                scroll_attempts += 1
                 
                 # Verificar cantidad de resultados cargados
                 business_elements = self.driver.find_elements(
                     By.CSS_SELECTOR, 
                     "div[role='feed'] > div > div[jsaction]"
                 )
-                logger.info(f"Resultados cargados: {len(business_elements)}")
+                current_count = len(business_elements)
+                logger.info(f"Elementos encontrados: {current_count} (Meta: {max_results})")
                 
-                if len(business_elements) >= max_results:
+                if current_count >= max_results:
+                    logger.info("Meta de resultados alcanzada en vista")
                     break
                 
-                self._random_delay(1, 2)
+                if current_count == last_count:
+                    no_change_count += 1
+                    logger.info(f"Sin nuevos resultados (Intento {no_change_count}/{max_no_change})")
+                    if no_change_count >= max_no_change:
+                        # Intentar un último "End" key fuerte
+                        ActionChains(self.driver).send_keys(Keys.END).perform()
+                        time.sleep(3)
+                        # Re-check
+                        new_elems = len(self.driver.find_elements(By.CSS_SELECTOR, "div[role='feed'] > div > div[jsaction]"))
+                        if new_elems == current_count:
+                            logger.warning("Parece que llegamos al final de la lista")
+                            break
+                else:
+                    no_change_count = 0
+                    last_count = current_count
+                
+                # Pausa variable
+                self._random_delay(1.5, 3.0)
             
             # Extraer información de cada negocio
             logger.info("Extrayendo información de negocios...")
@@ -265,7 +299,9 @@ class GoogleMapsScraperAdvanced:
                     business_data = self._extract_business_details(element, idx)
                     if business_data:
                         self.results.append(business_data)
-                        logger.info(f"[{idx}/{len(business_elements)}] Extraído: {business_data.nombre}")
+                        # Sanitize name for logging to avoid UnicodeEncodeError on Windows consoles
+                        safe_name = business_data.nombre.encode('ascii', 'replace').decode('ascii')
+                        logger.info(f"[{idx}/{len(business_elements)}] Extraído: {safe_name}")
                 except Exception as e:
                     logger.warning(f"Error extrayendo negocio {idx}: {e}")
                     continue
@@ -279,34 +315,68 @@ class GoogleMapsScraperAdvanced:
             
         except Exception as e:
             logger.error(f"Error durante la búsqueda: {e}")
+            self.driver.save_screenshot("search_error.png")
             return []
     
     def _extract_business_details(self, element, index: int) -> Optional[BusinessData]:
         """
         Extrae detalles de un negocio desde su elemento en la lista
-        
-        Args:
-            element: WebElement del negocio
-            index: Índice del negocio en la lista
-            
-        Returns:
-            BusinessData o None si falla
         """
         try:
             # Click en el elemento para abrir detalles
-            self.driver.execute_script("arguments[0].scrollIntoView(true);", element)
-            self._random_delay(0.3, 0.7)
-            element.click()
-            self._random_delay(2, 3)
+            self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
+            self._random_delay(1.0, 2.0)
             
-            # Extraer nombre
             try:
-                nombre_element = WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "h1.DUwDvf"))
-                )
-                nombre = nombre_element.text
-            except:
-                nombre = "N/A"
+                element.click()
+            except Exception:
+                # Intentar click JS si el normal falla
+                self.driver.execute_script("arguments[0].click();", element)
+            
+            self._random_delay(2, 4)
+            
+            # Esperar a que cargue el nombre (indicador de que el panel se abrió)
+            # Estrategia multi-selector para el Nombre
+            nombre = "N/A"
+            name_selectors = [
+                (By.CSS_SELECTOR, "h1.DUwDvf"),
+                (By.CSS_SELECTOR, "h1.fontHeadlineLarge"),
+                (By.TAG_NAME, "h1"),
+                (By.CSS_SELECTOR, "[role='main'] [aria-label]") 
+            ]
+            
+            for selector in name_selectors:
+                try:
+                    nombre_elements = self.driver.find_elements(*selector)
+                    for el in nombre_elements:
+                         # Tomar solo la primera línea y eliminar espacios
+                         raw_text = el.text.strip()
+                         text = raw_text.split('\n')[0].strip()
+                         
+                         # Lista negra de palabras/títulos inválidos
+                         blacklist = ["Resultados", "Results", "Google Maps", "Patrocinado", "Sponsored", "Anuncio", "Ad", ""]
+                         
+                         if text and text not in blacklist and "Patrocinado" not in text:
+                             nombre = text
+                             break
+                    if nombre != "N/A":
+                        break
+                except:
+                    continue
+            
+            # Fallback a aria-label del elemento original si todo falla
+            if nombre == "N/A":
+                try:
+                     val = element.get_attribute("aria-label")
+                     if val: nombre = val
+                except:
+                    pass
+
+            if not nombre or nombre in ["Resultados", "Results", "N/A"]:
+                 logger.warning(f"No se pudo extraer nombre válido para ítem {index}. Encontrado: {nombre}")
+                 self.driver.save_screenshot(f"error_name_{index}.png")
+                 return None
+
             
             # Extraer dirección
             try:
@@ -314,7 +384,7 @@ class GoogleMapsScraperAdvanced:
                     By.CSS_SELECTOR, 
                     "button[data-item-id='address']"
                 )
-                direccion = direccion_button.get_attribute("aria-label").replace("Dirección: ", "")
+                direccion = direccion_button.get_attribute("aria-label").replace("Dirección: ", "").replace("Address: ", "")
             except:
                 direccion = None
             
@@ -335,15 +405,26 @@ class GoogleMapsScraperAdvanced:
             sitio_web = None
             email = None
             try:
+                # Buscar botones de acción que suelen tener el sitio web
                 website_link = self.driver.find_element(
                     By.CSS_SELECTOR, 
                     "a[data-item-id='authority']"
                 )
                 sitio_web = website_link.get_attribute("href")
+            except:
+                pass
+
+            # Estrategia mejorada para Email
+            try:
+                # 1. Buscar en todos los enlaces visibles por 'mailto:'
+                mailto_links = self.driver.find_elements(By.CSS_SELECTOR, "a[href^='mailto:']")
+                if mailto_links:
+                    email = mailto_links[0].get_attribute("href").replace("mailto:", "")
                 
-                # Intentar extraer email del texto visible
-                page_text = self.driver.find_element(By.TAG_NAME, "body").text
-                email = self._extract_email_from_text(page_text)
+                # 2. Si no hay mailto, buscar en el texto de la página
+                if not email:
+                    page_text = self.driver.find_element(By.TAG_NAME, "body").text
+                    email = self._extract_email_from_text(page_text)
             except:
                 pass
             
@@ -412,8 +493,11 @@ class GoogleMapsScraperAdvanced:
             
             return business_data
             
+            return business_data
+            
         except Exception as e:
             logger.error(f"Error extrayendo detalles del negocio {index}: {e}")
+            self.driver.save_screenshot(f"error_extraction_{index}.png")
             return None
     
     def export_to_csv(self, filename: str = "resultados_scraper.csv"):

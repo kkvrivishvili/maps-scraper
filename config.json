@@ -20,12 +20,13 @@
     },
     "export": {
       "csv_enabled": true,
-      "json_enabled": true,
-      "excel_enabled": true,
+      "json_enabled": false,
+      "excel_enabled": false,
       "google_sheets": {
         "enabled": true,
         "credentials_path": "gen-lang-client-0571756605-0e567500e274.json",
-        "sheet_name": "Scraper Results"
+        "sheet_name": "Scraper Results",
+        "share_email": "kote.moto.g@gmail.com"
       },
       "output_directory": "./resultados"
     },
@@ -41,26 +42,30 @@
       "random_delays": true,
       "human_like_scrolling": true,
       "disable_webdriver_flag": true
+    },
+    "cache": {
+      "enabled": false,
+      "max_age_hours": 24
     }
   },
   "search_presets": [
     {
-      "name": "Restaurantes Madrid",
-      "categoria": "restaurantes",
-      "ubicacion": "Madrid, España",
-      "max_results": 50
+      "name": "Showroom, Ropa",
+      "categoria": "showroom",
+      "ubicacion": "Mendoza, Argentina",
+      "max_results": 200
     },
     {
-      "name": "Hoteles Barcelona",
-      "categoria": "hoteles",
-      "ubicacion": "Barcelona, España",
-      "max_results": 30
+      "name": "Ropa ñiños, Ropa",
+      "categoria": "clothes",
+      "ubicacion": "Mendoza, Argentina",
+      "max_results": 200
     },
     {
-      "name": "Cafeterías Ciudad de México",
-      "categoria": "cafeterías",
-      "ubicacion": "Ciudad de México, México",
-      "max_results": 40
+      "name": "vestidos, clothes",
+      "categoria": "ropa",
+      "ubicacion": "Mendoza, Argentina",
+      "max_results": 200
     }
   ]
 }
