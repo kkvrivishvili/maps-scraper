@@ -323,59 +323,91 @@ class GoogleMapsScraperAdvanced:
         Extrae detalles de un negocio desde su elemento en la lista
         """
         try:
+            # Obtener nombre esperado del elemento de la lista para verificar click
+            expected_name_lower = ""
+            try:
+                # Intentar obtener el texto de la cabecera del elemento de lista
+                # Suele ser un div con clase fontHeadlineSmall o simplemente la primera línea de texto
+                raw_text = element.text
+                if raw_text:
+                     # Tomar primera línea no vacía
+                     lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
+                     if lines:
+                         expected_name_lower = lines[0].lower()
+            except:
+                pass
+
             # Click en el elemento para abrir detalles
             self.driver.execute_script("arguments[0].scrollIntoView({behavior: 'smooth', block: 'center'});", element)
             self._random_delay(1.0, 2.0)
             
-            try:
-                element.click()
-            except Exception:
-                # Intentar click JS si el normal falla
-                self.driver.execute_script("arguments[0].click();", element)
+            # Intentar click hasta 3 veces si no cambia el panel
+            click_success = False
+            extracted_name = ""
             
-            self._random_delay(2, 4)
-            
-            # Esperar a que cargue el nombre (indicador de que el panel se abrió)
-            # Estrategia multi-selector para el Nombre
-            nombre = "N/A"
-            name_selectors = [
-                (By.CSS_SELECTOR, "h1.DUwDvf"),
-                (By.CSS_SELECTOR, "h1.fontHeadlineLarge"),
-                (By.TAG_NAME, "h1"),
-                (By.CSS_SELECTOR, "[role='main'] [aria-label]") 
-            ]
-            
-            for selector in name_selectors:
+            for attempt in range(3):
                 try:
-                    nombre_elements = self.driver.find_elements(*selector)
-                    for el in nombre_elements:
-                         # Tomar solo la primera línea y eliminar espacios
-                         raw_text = el.text.strip()
-                         text = raw_text.split('\n')[0].strip()
-                         
-                         # Lista negra de palabras/títulos inválidos
-                         blacklist = ["Resultados", "Results", "Google Maps", "Patrocinado", "Sponsored", "Anuncio", "Ad", ""]
-                         
-                         if text and text not in blacklist and "Patrocinado" not in text:
-                             nombre = text
-                             break
-                    if nombre != "N/A":
+                    # Click normal o JS
+                    if attempt == 0:
+                        element.click()
+                    else:
+                        self.driver.execute_script("arguments[0].click();", element)
+                    
+                    self._random_delay(2, 3)
+                    
+                    # Verificar si el panel cambió (nombre coincide con esperado)
+                    # Estrategia multi-selector para el Nombre
+                    extracted_name = "N/A"
+                    name_selectors = [
+                        (By.CSS_SELECTOR, "h1.DUwDvf"),
+                        (By.CSS_SELECTOR, "h1.fontHeadlineLarge"),
+                        (By.TAG_NAME, "h1"),
+                        (By.CSS_SELECTOR, "[role='main'] [aria-label]") 
+                    ]
+                    
+                    for selector in name_selectors:
+                        try:
+                            nombre_elements = self.driver.find_elements(*selector)
+                            for el in nombre_elements:
+                                 # Tomar solo la primera línea y eliminar espacios
+                                 raw_text = el.text.strip()
+                                 text = raw_text.split('\n')[0].strip()
+                                 
+                                 # Lista negra
+                                 blacklist = ["Resultados", "Results", "Google Maps", "Patrocinado", "Sponsored", "Anuncio", "Ad", ""]
+                                 
+                                 if text and text not in blacklist and "Patrocinado" not in text:
+                                     extracted_name = text
+                                     break
+                            if extracted_name != "N/A":
+                                break
+                        except:
+                            continue
+                    
+                    # Validación: Si el nombre extraído se parece al esperado
+                    if extracted_name != "N/A" and expected_name_lower:
+                        # Simple check: is expected name in extracted name or vice versa?
+                        # Ignorar caso y espacios
+                        ex_lower = extracted_name.lower()
+                        if expected_name_lower in ex_lower or ex_lower in expected_name_lower:
+                            click_success = True
+                            break
+                        else:
+                            logger.warning(f"Click intento {attempt+1}: Nombre panel '{extracted_name}' no coincide con lista '{expected_name_lower}'")
+                    elif extracted_name != "N/A":
+                        # Si no pudimos leer nombre esperado, pero tenemos un nombre válido, asumimos éxito
+                        click_success = True
                         break
-                except:
-                    continue
+                        
+                except Exception as e:
+                    logger.warning(f"Excepción en click intento {attempt+1}: {e}")
             
-            # Fallback a aria-label del elemento original si todo falla
-            if nombre == "N/A":
-                try:
-                     val = element.get_attribute("aria-label")
-                     if val: nombre = val
-                except:
-                    pass
+            if not click_success:
+                logger.error(f"No se pudo abrir panel correcto para: {expected_name_lower}")
+                return None
+            
+            nombre = extracted_name
 
-            if not nombre or nombre in ["Resultados", "Results", "N/A"]:
-                 logger.warning(f"No se pudo extraer nombre válido para ítem {index}. Encontrado: {nombre}")
-                 self.driver.save_screenshot(f"error_name_{index}.png")
-                 return None
 
             
             # Extraer dirección
