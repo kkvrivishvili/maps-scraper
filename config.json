@@ -16,7 +16,9 @@
     "extraction": {
       "max_scroll_attempts": 15,
       "timeout_seconds": 15,
-      "retry_attempts": 3
+      "retry_attempts": 3,
+      "extract_emails_from_websites": true,
+      "website_scrape_timeout": 10
     },
     "export": {
       "csv_enabled": true,

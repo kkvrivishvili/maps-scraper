@@ -408,6 +408,24 @@ class GoogleMapsScraperAdvanced:
             
             nombre = extracted_name
 
+            # Esperar brevemente a que la URL cambie para reflejar el negocio (!3d...)
+            # Esto mejora la extracción de coordenadas
+            try:
+                WebDriverWait(self.driver, 2).until(
+                   lambda d: "!3d" in d.current_url or "/place/" in d.current_url
+                )
+            except:
+                pass # Si no cambia, seguimos igual
+
+            # Esperar brevemente a que la URL cambie para reflejar el negocio (!3d...)
+            # Esto mejora la extracción de coordenadas
+            try:
+                WebDriverWait(self.driver, 2).until(
+                   lambda d: "!3d" in d.current_url or "/place/" in d.current_url
+                )
+            except:
+                pass # Si no cambia, seguimos igual
+
 
             
             # Extraer dirección
@@ -457,7 +475,19 @@ class GoogleMapsScraperAdvanced:
                 if not email:
                     page_text = self.driver.find_element(By.TAG_NAME, "body").text
                     email = self._extract_email_from_text(page_text)
-            except:
+                    
+                # 3. Extracción profunda desde el sitio web (NUEVO)
+                if self.extract_web_emails and self.website_extractor and sitio_web and (not email or "gmail" not in email): 
+                    # Si no hay email, o si queremos probar suerte buscando uno mejor en la web
+                    # (A veces Maps tiene un gmail genérico pero la web tiene info@dominio.com)
+                    if not email:
+                        logger.info(f"Buscando email en sitio web: {sitio_web}")
+                        web_email = self.website_extractor.extract(sitio_web)
+                        if web_email:
+                            email = web_email
+                            logger.info(f"Email encontrado en web: {email}")
+            except Exception as e:
+                logger.warning(f"Error en extracción de email: {e}")
                 pass
             
             # Extraer rating
@@ -499,16 +529,35 @@ class GoogleMapsScraperAdvanced:
             except:
                 pass
             
-            # Extraer coordenadas de la URL
+            # Extraer coordenadas (Mejorado)
             lat, lng = None, None
             try:
                 current_url = self.driver.current_url
-                coords_match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', current_url)
-                if coords_match:
-                    lat = float(coords_match.group(1))
-                    lng = float(coords_match.group(2))
+                
+                # Intentar encontrar !3d y !4d que indican la ubicación del pin específico
+                # Formato: !3d-32.896!4d-68.851
+                pin_coords = re.search(r'!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)', current_url)
+                
+                if pin_coords:
+                    lat = float(pin_coords.group(1))
+                    lng = float(pin_coords.group(2))
+                else:
+                    # Fallback al centro del mapa (menos preciso)
+                    center_coords = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', current_url)
+                    if center_coords:
+                        lat = float(center_coords.group(1))
+                        lng = float(center_coords.group(2))
             except:
                 pass
+            
+            # Validación de calidad
+            if not nombre or len(nombre) < 2:
+                logger.warning(f"Ignorando resultado inválido (Nombre demasiado corto): {nombre}")
+                return None
+                
+            if not direccion and not categoria:
+                logger.warning(f"Ignorando resultado incompleto (Sin dirección ni categoría): {nombre}")
+                return None
             
             business_data = BusinessData(
                 nombre=nombre,
@@ -539,7 +588,8 @@ class GoogleMapsScraperAdvanced:
             return
         
         try:
-            with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+            # Usar utf-8-sig para compatibilidad con Excel en Windows
+            with open(filename, 'w', newline='', encoding='utf-8-sig') as csvfile:
                 fieldnames = [
                     'nombre', 'direccion', 'telefono', 'email', 'sitio_web',
                     'rating', 'reviews_count', 'categoria', 'lat', 'lng', 'scrape_timestamp'

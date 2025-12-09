@@ -372,7 +372,7 @@ class BatchScraperManager:
         import csv
         from dataclasses import asdict
         
-        with open(filename, 'w', newline='', encoding='utf-8') as f:
+        with open(filename, 'w', newline='', encoding='utf-8-sig') as f:
             if self.all_results:
                 fieldnames = asdict(self.all_results[0]).keys()
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
