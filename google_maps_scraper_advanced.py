@@ -395,10 +395,44 @@ class BatchScraperManager:
         from dataclasses import asdict
         
         # Calcular resumen
+        # Calcular resumen detallado
         total_businesses = len(self.all_results)
         emails_found = sum(1 for b in self.all_results if b.email)
         websites_found = sum(1 for b in self.all_results if b.sitio_web)
         
+        # Desglose de sitios web
+        tn_count = 0
+        fb_count = 0
+        ig_count = 0
+        other_count = 0
+        
+        for b in self.all_results:
+            if b.instagram:
+                ig_count += 1
+            if b.facebook:
+                fb_count += 1
+                
+            if b.sitio_web:
+                url_lower = b.sitio_web.lower()
+                if 'tiendanube' in url_lower:
+                    tn_count += 1
+                else:
+                    other_count += 1
+        
+        # Calcular tasa de éxito de emails sobre el target relevante (Tienda Nube + Otros)
+        # Excluye redes sociales del denominador ya que raramente tienen email scrapable directamente
+        target_websites = tn_count + other_count
+        # Contamos emails encontrados en negocios que SON target (TN u otros)
+        emails_in_target = sum(1 for b in self.all_results if b.email and b.sitio_web and 
+                             ('tiendanube' in b.sitio_web.lower() or 
+                              ('facebook.com' not in b.sitio_web.lower() and 'instagram.com' not in b.sitio_web.lower())))
+        
+        # Si no tiene website pero tiene email, cuenta como éxito global, 
+        # pero para esta métrica especifica, el usuario pidió "respecto a paginas web otras y tienda nube"
+        # Así que usamos emails_in_target / target_websites
+        
+        email_success_rate = f"{(emails_in_target/target_websites*100):.1f}%" if target_websites else "0%"
+
         with open(filename, 'w', encoding='utf-8') as f:
             data = {
                 "_summary": {
@@ -406,13 +440,34 @@ class BatchScraperManager:
                     "total_results": total_businesses,
                     "emails_found": emails_found,
                     "websites_found": websites_found,
-                    "success_rate_email": f"{(emails_found/total_businesses*100):.1f}%" if total_businesses else "0%"
+                    "websites_breakdown": {
+                        "tienda_nube": tn_count,
+                        "instagram": ig_count,
+                        "facebook": fb_count,
+                        "other_websites": other_count
+                    },
+                    "email_success_rate_target_sites": email_success_rate,
+                    "note": "Success rate based on Tienda Nube + Other Websites (excluding Social Media)"
                 },
                 "results": [asdict(b) for b in self.all_results]
             }
             json.dump(data, f, indent=2, ensure_ascii=False)
         
         logger.info(f"JSON exportado: {filename}")
+        
+        # Imprimir resumen en consola para el usuario
+        print("\n" + "="*50)
+        print("📊 RESUMEN DE EXTRACCIÓN")
+        print("="*50)
+        print(f"Total Resultados: {total_businesses}")
+        print(f"Emails Encontrados: {emails_found}")
+        print(f"Sitios Web: {websites_found}")
+        print(f"  - Tienda Nube: {tn_count}")
+        print(f"  - Instagram: {ig_count}")
+        print(f"  - Facebook: {fb_count}")
+        print(f"  - Otros: {other_count}")
+        print(f"Tasa Éxito Email (TN + Otros): {email_success_rate}")
+        print("="*50 + "\n")
     
     def _export_excel(self, filename: Path):
         """Exporta a Excel"""

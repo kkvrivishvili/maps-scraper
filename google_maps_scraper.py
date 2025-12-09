@@ -61,6 +61,8 @@ class BusinessData:
     telefono: Optional[str] = None
     email: Optional[str] = None
     sitio_web: Optional[str] = None
+    instagram: Optional[str] = None
+    facebook: Optional[str] = None
     rating: Optional[float] = None
     reviews_count: Optional[int] = None
     categoria: Optional[str] = None
@@ -484,6 +486,22 @@ class GoogleMapsScraperAdvanced:
             except:
                 pass
 
+            except:
+                pass
+            
+            # Clasificar Sitio Web vs Redes Sociales
+            instagram_url = None
+            facebook_url = None
+            
+            if sitio_web:
+                url_lower = sitio_web.lower()
+                if 'instagram.com' in url_lower:
+                    instagram_url = sitio_web
+                    sitio_web = None  # Limpiar sitio web principal
+                elif 'facebook.com' in url_lower:
+                    facebook_url = sitio_web
+                    sitio_web = None  # Limpiar sitio web principal
+
             # Estrategia mejorada para Email
             try:
                 # 1. Buscar en todos los enlaces visibles por 'mailto:'
@@ -589,11 +607,11 @@ class GoogleMapsScraperAdvanced:
                 reviews_count=reviews_count,
                 categoria=categoria,
                 lat=lat,
-                lng=lng
-            )
-            
-            return business_data
-            
+                lng=lng,
+                search_group=self.current_search_group,
+                instagram=instagram_url,
+                facebook=facebook_url
+            )    
             return business_data
             
         except Exception as e:
