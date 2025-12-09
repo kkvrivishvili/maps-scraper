@@ -13,6 +13,7 @@ Versión mejorada con:
 import json
 import time
 import logging
+import re
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 import os
@@ -356,7 +357,8 @@ class BatchScraperManager:
         scraper = GoogleMapsScraperAdvanced(
             headless=headless,
             proxy=proxy,
-            config=scraper_config
+            config=scraper_config,
+            worker_id=idx
         )
         
         try:

@@ -99,7 +99,7 @@ class GoogleMapsScraperAdvanced:
     Scraper avanzado para Google Maps con técnicas anti-detección
     """
     
-    def __init__(self, headless: bool = False, proxy: Optional[str] = None, config: Optional[Dict] = None):
+    def __init__(self, headless: bool = False, proxy: Optional[str] = None, config: Optional[Dict] = None, worker_id: int = 0):
         """
         Inicializa el scraper
         
@@ -107,7 +107,15 @@ class GoogleMapsScraperAdvanced:
             headless: Ejecutar en modo headless
             proxy: Proxy a utilizar (formato: host:port)
             config: Configuración completa
+            worker_id: Identificador del worker para logging
         """
+        self.worker_id = worker_id
+        
+        # Colores para cada thread (hasta 6)
+        colors = ["\033[94m", "\033[92m", "\033[93m", "\033[95m", "\033[96m", "\033[91m"]
+        self.color = colors[worker_id % len(colors)]
+        self.reset_color = "\033[0m"
+        
         self.driver = None
         self.headless = headless
         self.proxy = proxy
@@ -242,6 +250,25 @@ class GoogleMapsScraperAdvanced:
                 return match.group(0)
         return None
     
+    def _log(self, message: str, level: str = "INFO"):
+        """Log helper con color por thread y sanitización"""
+        # Sanitizar mensaje para evitar errores de encoding en Windows console
+        try:
+            safe_message = message.encode('ascii', 'replace').decode('ascii')
+        except:
+            safe_message = message
+            
+        msg = f"{self.color}[Worker {self.worker_id}] {safe_message}{self.reset_color}"
+        
+        if level == "INFO":
+            logger.info(msg)
+        elif level == "WARNING":
+            logger.warning(msg)
+        elif level == "ERROR":
+            logger.error(msg)
+        elif level == "DEBUG":
+            logger.debug(msg)
+
     def search_businesses(
         self, 
         categoria: str, 
@@ -250,20 +277,12 @@ class GoogleMapsScraperAdvanced:
     ) -> List[BusinessData]:
         """
         Busca negocios en Google Maps
-        
-        Args:
-            categoria: Tipo de negocio (ej: "restaurantes", "hoteles")
-            ubicacion: Ciudad o área (ej: "Madrid, España")
-            max_results: Número máximo de resultados a extraer
-            
-        Returns:
-            Lista de BusinessData con información de negocios
         """
         query = f"{categoria} en {ubicacion}"
         url = f"https://www.google.com/maps/search/{quote_plus(query)}"
         
-        logger.info(f"Buscando: {query}")
-        logger.info(f"URL: {url}")
+        self._log(f"Buscando: {query}")
+        self._log(f"URL: {url}")
         
         self.current_search_group = query
         
@@ -276,13 +295,13 @@ class GoogleMapsScraperAdvanced:
                 results_panel = WebDriverWait(self.driver, 15).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "div[role='feed']"))
                 )
-                logger.info("Panel de resultados cargado")
+                self._log("Panel de resultados cargado")
             except TimeoutException:
-                logger.error("No se pudo cargar el panel de resultados")
+                self._log("No se pudo cargar el panel de resultados", "ERROR")
                 return []
             
             # Scroll para cargar más resultados
-            logger.info("Realizando scroll para cargar más resultados...")
+            self._log("Realizando scroll para cargar más resultados...")
             
             # Estrategia de scroll agresiva
             no_change_count = 0
@@ -301,21 +320,21 @@ class GoogleMapsScraperAdvanced:
                     "div[role='feed'] > div > div[jsaction]"
                 )
                 current_count = len(business_elements)
-                logger.info(f"Elementos encontrados: {current_count} (Meta: {max_results})")
+                self._log(f"Elementos encontrados: {current_count} (Meta: {max_results})")
                 
                 # Check explícito de fin de lista
                 try:
                     end_text_elements = self.driver.find_elements(By.CSS_SELECTOR, "span.HlvSq")
                     for el in end_text_elements:
                         if "final" in el.text.lower() or "end" in el.text.lower():
-                            logger.info("Detectado mensaje de fin de lista")
+                            self._log("Detectado mensaje de fin de lista")
                             current_count = max_results + 1 # Force break
                             break
                 except:
                     pass
                 
                 if current_count >= max_results:
-                    logger.info("Meta de resultados alcanzada en vista")
+                    self._log("Meta de resultados alcanzada en vista")
                     break
                 
                 if current_count == last_count:
@@ -338,7 +357,7 @@ class GoogleMapsScraperAdvanced:
                 self._random_delay(1.5, 3.0)
             
             # Extraer información de cada negocio
-            logger.info("Extrayendo información de negocios...")
+            self._log("Extrayendo información de negocios...")
             business_elements = self.driver.find_elements(
                 By.CSS_SELECTOR, 
                 "div[role='feed'] > div > div[jsaction]"
@@ -402,16 +421,22 @@ class GoogleMapsScraperAdvanced:
                             # Click normal o JS (Mejorado)
                             # Intentamos evitar "Click Intercepted" buscando un elemento clickeable interno o usando JS directo
                             try:
-                                # Intento 1: Click JS directo al elemento contenedor (más seguro contra overlays)
-                                self.driver.execute_script("arguments[0].click();", element)
+                                # Prioridad 1: Buscar el enlace 'overlay' (a.hfpxzc) que cubre el card
+                                # Esta es la forma más fiable en el nuevo diseño
+                                link_overlay = element.find_element(By.CSS_SELECTOR, "a.hfpxzc")
+                                self.driver.execute_script("arguments[0].click();", link_overlay)
                             except:
-                                # Intento 2: Buscar el enlace interno 'a' y clickearlo
                                 try:
-                                    link_el = element.find_element(By.TAG_NAME, "a")
-                                    self.driver.execute_script("arguments[0].click();", link_el)
+                                    # Prioridad 2: JS Click en el elemento contenedor
+                                    self.driver.execute_script("arguments[0].click();", element)
                                 except:
-                                    # Fallback: Click nativo
-                                    element.click()
+                                    # Prioridad 3: Buscar cualquier 'a' y clickear
+                                    try:
+                                        link_el = element.find_element(By.TAG_NAME, "a")
+                                        self.driver.execute_script("arguments[0].click();", link_el)
+                                    except:
+                                        # Fallback: Click nativo
+                                        element.click()
                             
                             self._random_delay(2, 3)
                             
@@ -447,16 +472,16 @@ class GoogleMapsScraperAdvanced:
                                     click_success = True
                                     break
                                 else:
-                                    logger.warning(f"Click intento {attempt+1}: Nombre panel '{extracted_name}' no coincide con lista '{expected_name_lower}'")
+                                    self._log(f"Click intento {attempt+1}: Nombre panel '{extracted_name}' no coincide con lista '{expected_name_lower}'", "WARNING")
                             elif extracted_name != "N/A":
                                 click_success = True
                                 break
                                 
                         except Exception as e:
-                            logger.warning(f"Excepción en click intento {attempt+1}: {e}")
+                            self._log(f"Excepción en click intento {attempt+1}: {e}", "WARNING")
                     
                     if not click_success:
-                        logger.error(f"No se pudo abrir panel correcto para: {expected_name_lower}")
+                        self._log(f"No se pudo abrir panel correcto para: {expected_name_lower}", "ERROR")
                         continue
 
                     business_data = self._extract_business_details(idx, (pre_lat, pre_lng))
@@ -465,9 +490,9 @@ class GoogleMapsScraperAdvanced:
                         current_search_results.append(business_data)
                         # Sanitize name for logging to avoid UnicodeEncodeError on Windows consoles
                         safe_name = business_data.nombre.encode('ascii', 'replace').decode('ascii')
-                        logger.info(f"[{idx}/{len(business_elements)}] Extraído: {safe_name}")
+                        self._log(f"[{idx}/{len(business_elements)}] Extraído: {safe_name}")
                 except Exception as e:
-                    logger.warning(f"Error extrayendo negocio {idx}: {e}")
+                    self._log(f"Error extrayendo negocio {idx}: {e}", "WARNING")
                     continue
                 
                 # Delay aleatorio entre extracciones

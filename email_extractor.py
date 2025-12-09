@@ -51,15 +51,13 @@ class WebsiteEmailExtractor:
             visited.add(current_url)
             self._find_emails_in_soup(soup, emails)
             
-            if emails:
-                 return self._select_best_email(emails)
-            
             # Estrategias específicas por plataforma
             domain = urlparse(current_url).netloc
-            if 'tiendanube' in domain:
-                logger.debug("Detectada Tienda Nube. Aplicando estrategia específica.")
-                self._extract_tienda_nube(soup, emails)
-            elif 'facebook.com' in domain:
+            
+            # Tienda Nube: Se anuló la búsqueda específica por clases, confiamos en el scraping general
+            # is_tienda_nube = 'tiendanube' in domain or self._detect_tienda_nube(soup)
+            
+            if 'facebook.com' in domain:
                  logger.debug("Detectado Facebook. Intentando extracción de meta-data.")
                  self._extract_facebook(soup, emails)
             elif 'instagram.com' in domain:
@@ -67,7 +65,7 @@ class WebsiteEmailExtractor:
                  self._extract_instagram(soup, emails)
 
             if emails:
-                 return self._select_best_email(emails)
+                 return self._format_emails(emails)
             
             # 2. Buscar página de contacto (Si no es red social)
             if 'facebook.com' not in domain and 'instagram.com' not in domain:
@@ -77,11 +75,8 @@ class WebsiteEmailExtractor:
                     contact_soup, link_url = self._get_soup(contact_link)
                     if contact_soup:
                         self._find_emails_in_soup(contact_soup, emails)
-                        # También aplicar estrategia Tienda Nube si era tal
-                        if 'tiendanube' in urlparse(link_url).netloc:
-                             self._extract_tienda_nube(contact_soup, emails)
             
-            return self._select_best_email(emails)
+            return self._format_emails(emails)
             
         except Exception as e:
             logger.warning(f"Error extrayendo email de {url}: {e}")
@@ -121,8 +116,27 @@ class WebsiteEmailExtractor:
         text = soup.get_text()
         found_text = self.email_pattern.findall(text)
         for email in found_text:
-             if self._is_valid_email(email):
+            if self._is_valid_email(email):
                 emails.add(email)
+
+        # 4. Analizar formularios (NUEVO)
+        # Buscar en action="mailto:..." o action=".../send?to=..." (raro pero posible)
+        # O inputs hidden con nombres sospechosos
+        forms = soup.find_all('form')
+        for form in forms:
+            # Check action
+            action = form.get('action', '')
+            if 'mailto:' in action:
+                email = action.replace('mailto:', '').split('?')[0].strip()
+                if self._is_valid_email(email):
+                    emails.add(email)
+            
+            # Check hidden inputs for recipients
+            for input_tag in form.find_all('input', type='hidden'):
+                val = input_tag.get('value', '')
+                if '@' in val and self._is_valid_email(val):
+                    logger.debug(f"Email encontrado en hidden input: {val}")
+                    emails.add(val)
 
     def _find_contact_link(self, soup: BeautifulSoup, base_url: str) -> Optional[str]:
         for a in soup.find_all('a', href=True):
@@ -138,20 +152,25 @@ class WebsiteEmailExtractor:
                     return full_url
         return None
 
+    def _detect_tienda_nube(self, soup: BeautifulSoup) -> bool:
+        """Detecta si un sitio es Tienda Nube analizando el HTML"""
+        # 1. Meta generator
+        meta_gen = soup.find('meta', attrs={'name': 'generator'})
+        if meta_gen and 'nocnoc' in meta_gen.get('content', '').lower(): 
+            return True
+        # 2. Links 'Powered by'
+        for link in soup.find_all('a', href=True):
+            if 'tiendanube.com' in link['href']:
+                return True
+        # 3. Scripts comunes (LS.store es muy típico)
+        if soup.find('script', string=re.compile(r'LS\.store')):
+            return True
+        return False
+
     def _extract_tienda_nube(self, soup: BeautifulSoup, emails: Set[str]):
-        """Estrategia específica para Tienda Nube"""
-        # Muchas tiendas nube tienen el email en el footer o config
-        # Buscar en inputs ocultos o jsons de configuración es complejo con requests, 
-        # pero buscamos patrones comunes en el HTML renderizado.
-        # 1. Enlaces 'mailto' (ya cubierto por _find_emails_in_soup)
-        
-        # 2. Bloques de contacto visual
-        contact_blocks = soup.select('.contact-info, .footer-contact, #contact-page, .contact-item, .subutility-list-item, .contact-link')
-        for block in contact_blocks:
-            found = self.email_pattern.findall(block.get_text())
-            for email in found:
-                if self._is_valid_email(email):
-                    emails.add(email)
+        """Estrategia específica para Tienda Nube (DESACTIVADA POR SOLICITUD)"""
+        # Se anuló la búsqueda por clases específicas, se usa scraping genérico
+        pass
 
     def _extract_facebook(self, soup: BeautifulSoup, emails: Set[str]):
         """Estrategia para Facebook (Limitada por login)"""
@@ -175,7 +194,6 @@ class WebsiteEmailExtractor:
                 emails.add(email)
         
         # A veces está en el JSON script
-        # (Complejo de parsear robustamente sin json load total, pero regex simple puede servir)
         scripts = soup.find_all('script', type='application/ld+json')
         for script in scripts:
             found = self.email_pattern.findall(script.string or "")
@@ -187,20 +205,30 @@ class WebsiteEmailExtractor:
         if not email or len(email) > 100: return False
         if email.endswith(('.png', '.jpg', '.jpeg', '.gif', '.css', '.js')): return False
         if 'example.com' in email or 'domain.com' in email: return False
+        
+        # Blacklist de placeholders comunes
+        placeholders = [
+            'tucorreo@correo.com', 'tuemail@email.com', 'tunombre@email.com',
+            'email@email.com', 'info@tudominio.com', 'email@tudominio.com',
+            'tunombre@tudominio.com'
+        ]
+        if email.lower() in placeholders:
+            return False
+            
         return True
 
-    def _select_best_email(self, emails: Set[str]) -> Optional[str]:
+    def _format_emails(self, emails: Set[str]) -> Optional[str]:
+        """Formatea la lista de emails encontrados, unidos por ;"""
         if not emails:
             return None
-        
+            
         # Priorizar info@, contacto@, hola@
         priority = ['info', 'contacto', 'contact', 'hola', 'ventas', 'admin']
         email_list = list(emails)
         
-        # Ordenar: primero los que empiezan con prioridad, luego por longitud (más corto suele ser mejor)
         email_list.sort(key=lambda x: (
-            not any(x.lower().startswith(p) for p in priority), # False (0) viene antes que True (1), así que negamos
+            not any(x.lower().startswith(p) for p in priority), 
             len(x)
         ))
         
-        return email_list[0]
+        return " ; ".join(email_list)
