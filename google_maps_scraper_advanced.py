@@ -394,13 +394,23 @@ class BatchScraperManager:
         """Exporta a JSON"""
         from dataclasses import asdict
         
+        # Calcular resumen
+        total_businesses = len(self.all_results)
+        emails_found = sum(1 for b in self.all_results if b.email)
+        websites_found = sum(1 for b in self.all_results if b.sitio_web)
+        
         with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(
-                [asdict(b) for b in self.all_results],
-                f,
-                indent=2,
-                ensure_ascii=False
-            )
+            data = {
+                "_summary": {
+                    "generated_at": datetime.now().isoformat(),
+                    "total_results": total_businesses,
+                    "emails_found": emails_found,
+                    "websites_found": websites_found,
+                    "success_rate_email": f"{(emails_found/total_businesses*100):.1f}%" if total_businesses else "0%"
+                },
+                "results": [asdict(b) for b in self.all_results]
+            }
+            json.dump(data, f, indent=2, ensure_ascii=False)
         
         logger.info(f"JSON exportado: {filename}")
     

@@ -52,8 +52,8 @@
   },
   "search_presets": [
     {
-      "name": "Showroom, Ropa",
-      "categoria": "showroom",
+      "name": "Showroom ropa, Ropa",
+      "categoria": "showroom de ropa",
       "ubicacion": "Mendoza, Argentina",
       "max_results": 50
     }
