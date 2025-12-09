@@ -11,10 +11,14 @@ Versión mejorada con:
 """
 
 import json
+import time
+import logging
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 import os
 import hashlib
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime
 import pickle
 
@@ -79,9 +83,10 @@ class ConfigManager:
                         "enabled": False,
                         "credentials_path": "gen-lang-client-0571756605-0e567500e274.json",
                         "sheet_name": "Scraper Results"
-                    },
-                    "output_directory": "./resultados"
-                }
+                    }
+                },
+                "concurrent_searches": 1, # Nuevo: número de hilos para búsquedas concurrentes
+                "output_directory": "./resultados"
             }
         }
     
@@ -256,7 +261,57 @@ class BatchScraperManager:
             Diccionario con resultados por búsqueda
         """
         results_dict = {}
+        all_futures = []
         
+        # Obtener configuración de concurrencia
+        scraper_config = self.config_manager.config.get('scraper_config', {})
+        max_workers = scraper_config.get('concurrent_searches', 1)
+        
+        # Validar workers
+        if not isinstance(max_workers, int) or max_workers < 1:
+            max_workers = 1
+            
+        logger.info(f"Iniciando ejecución batch con {max_workers} hilos concurrentes.")
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for idx, search in enumerate(searches, 1):
+                future = executor.submit(
+                    self._process_single_search, 
+                    search, 
+                    idx, 
+                    len(searches)
+                )
+                all_futures.append(future)
+                
+            # Recolectar resultados a medida que completan
+            for future in concurrent.futures.as_completed(all_futures):
+                try:
+                    search_key, results = future.result()
+                    if results:
+                        results_dict[search_key] = results
+                        self.all_results.extend(results)
+                except Exception as e:
+                    logger.error(f"Error crítico en hilo de búsqueda: {e}")
+                    
+        return results_dict
+
+    def _process_single_search(self, search: Dict, idx: int, total: int) -> Tuple[str, List[BusinessData]]:
+        """Procesa una única búsqueda (para ejecución paralela)"""
+        categoria = search['categoria']
+        ubicacion = search['ubicacion']
+        max_results = search.get('max_results', 50)
+        search_key = f"{categoria}_{ubicacion}"
+        
+        print(f"\n⚡ INICIANDO BÚSQUEDA {idx}/{total}: {categoria} en {ubicacion}")
+        
+        # Verificación de cache (Thread-safe básica: lectura)
+        if self.cache_manager:
+            cached_results = self.cache_manager.get(categoria, ubicacion)
+            if cached_results:
+                print(f"✅ [Cache] {categoria} - {ubicacion}: {len(cached_results)} resultados cargados")
+                return search_key, cached_results
+                
+        # Configurar scraper dedicado para este hilo
         scraper_config = self.config_manager.config.get('scraper_config', {})
         headless = self.config_manager.get('scraper_config', 'browser', 'headless', default=False)
         proxy_data = scraper_config.get('proxy', {})
@@ -269,49 +324,6 @@ class BatchScraperManager:
         )
         
         try:
-            for idx, search in enumerate(searches, 1):
-                categoria = search['categoria']
-                ubicacion = search['ubicacion']
-                max_results = search.get('max_results', 50)
-                
-                print(f"\n{'='*70}")
-                print(f"BÚSQUEDA {idx}/{len(searches)}")
-                print(f"{'='*70}")
-                print(f"Categoría: {categoria}")
-                print(f"Ubicación: {ubicacion}")
-                print(f"Max resultados: {max_results}")
-                
-                # Intentar cargar desde cache
-                if self.cache_manager:
-                    cached_results = self.cache_manager.get(categoria, ubicacion)
-                    if cached_results:
-                        print("✅ Resultados cargados desde cache")
-                        results_dict[f"{categoria}_{ubicacion}"] = cached_results
-                        self.all_results.extend(cached_results)
-                        continue
-                
-                # Realizar scraping
-                results = scraper.search_businesses(
-                    categoria=categoria,
-                    ubicacion=ubicacion,
-                    max_results=max_results
-                )
-                
-                # Guardar en cache
-                if self.cache_manager and results:
-                    self.cache_manager.set(categoria, ubicacion, results)
-                
-                # Generar reporte para esta búsqueda
-                summary = ReportGenerator.generate_summary(results)
-                ReportGenerator.print_summary(summary)
-
-                # Deduplicación y Agregación
-                for result in results:
-                    # Asignar grupo de búsqueda
-                    result.search_group = f"{categoria} en {ubicacion}"
-                    
-                    # Generar firma única (nombre + direccion)
-                    # Usar .lower() y eliminar espacios para robustez
                     sig_name = (result.nombre or "").lower().strip()
                     sig_addr = (result.direccion or "").lower().strip()
                     if not sig_name or sig_name == "n/a":
